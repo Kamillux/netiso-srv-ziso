@@ -540,6 +540,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let verbose = check_arg(&mut args, "-v"); // Verbose / Debug
     let convert_input = get_arg_value(&mut args, "-i"); // Convert ISO to ZISO
 
+    // Check for mutually exclusive flags
+    if convert_input.is_some() && recursive_scan {
+        println!("ERROR: -i (convert mode) and -r (server mode) are mutually exclusive\n");
+        print_usage(&args[0]);
+        return Ok(());
+    }
+
     // Handle conversion mode
     if let Some(iso_file) = convert_input {
         let iso_path = Path::new(&iso_file);
