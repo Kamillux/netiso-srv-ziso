@@ -66,6 +66,10 @@ struct Server {
     files: Vec<IsoEntry>,
     active_file: Option<ActiveIso>,
     verbose: bool,
+    /// Reusable buffer to avoid allocations on every read operation.
+    /// This significantly reduces memory pressure during continuous ISO streaming
+    /// by reusing the same buffer instead of allocating a new Vec for each read.
+    read_buffer: Vec<u8>,
 }
 
 async fn get_data_start(file: &mut File) -> Result<u64, Box<dyn std::error::Error>> {
@@ -259,13 +263,18 @@ impl Server {
                         },
                         Cmd::ReadData => {
                             if let Some(active) = self.active_file.as_mut() {
-                                let mut buf = vec![0u8; msg.length as usize];
+                                let length = msg.length as usize;
+                                
+                                // Reuse the buffer, only resize if needed
+                                if self.read_buffer.len() != length {
+                                    self.read_buffer.resize(length, 0);
+                                }
 
                                 match &mut active.file {
                                     IsoFile::Regular(file) => {
                                         // Regular ISO file - use async file I/O
                                         file.seek(std::io::SeekFrom::Start(msg.offset)).await?;
-                                        file.read_exact(&mut buf).await?;
+                                        file.read_exact(&mut self.read_buffer).await?;
                                     },
                                     #[cfg(feature = "ziso")]
                                     IsoFile::Ziso { reader, inner_path } => {
@@ -273,16 +282,18 @@ impl Server {
                                         // The zarchive library handles decompression transparently
                                         let offset_in_iso = msg.offset - active.metadata.data_start;
                                         
-                                        if let Some(data) = reader.read_from_file(inner_path, offset_in_iso as usize, msg.length as usize) {
-                                            buf = data;
+                                        if let Some(data) = reader.read_from_file(inner_path, offset_in_iso as usize, length) {
+                                            // Copy data to our reusable buffer
+                                            self.read_buffer[..length].copy_from_slice(&data[..length]);
                                         } else {
                                             eprintln!("Failed to read from ZISO file at offset {}", msg.offset);
-                                            // Return zeros on error
+                                            // Fill with zeros on error
+                                            self.read_buffer.fill(0);
                                         }
                                     }
                                 }
 
-                                socket.try_write(&buf)?;
+                                socket.try_write(&self.read_buffer)?;
                             }
                         },
                         Cmd::GetIsoName => {
