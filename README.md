@@ -31,14 +31,39 @@ Options:
     `-r` - Recursive scanning for ISO files
     `-v` - Verbose output
     `-h` - Print usage
+    `-i <file.iso>` - Convert ISO to ZISO format (creates file.ziso and exits)
 
-Run: `netiso-srv [-r] [-v] [-h] [directory with *.iso files]`
+**Server mode:**
+```
+netiso-srv [-r] [-v] [directory with *.iso files]
+```
+
+**Convert mode:**
+```
+netiso-srv -i <file.iso>
+```
 
 ## Creating ZISO Archives
 
-To compress your Xbox 360 ISOs to ZISO format, use the Xenia emulator's ZArchive tool and rename the output:
+### Method 1: Using netiso-srv (Recommended)
 
-### Using Xenia Canary
+The built-in converter works on both Windows and Linux:
+
+```bash
+# Convert a single ISO file to ZISO
+netiso-srv -i /path/to/game.iso
+# Creates: /path/to/game.ziso
+```
+
+This method:
+- ✅ Works natively on Windows and Linux
+- ✅ Creates properly formatted ZISO files compatible with the server
+- ✅ Automatic compression with optimal settings
+- ✅ No additional tools required
+
+### Method 2: Using Xenia Canary (Alternative)
+
+Alternatively, you can use Xenia emulator's ZArchive tool:
 
 1. Download [Xenia Canary](https://github.com/xenia-canary/xenia-canary/releases)
 2. Launch Xenia Canary
