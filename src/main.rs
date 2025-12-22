@@ -5,7 +5,6 @@ use glob::glob;
 use tokio::fs::File;
 use std::env;
 use std::error::Error;
-use std::ffi::OsStr;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,13 +17,6 @@ use zarchive::reader::ZArchiveReader;
 const NETISO_SRV_PORT: u16 = 4323;
 const SECTOR_SIZE: u16 = 0x800; // 2048
 const XGD_MAGIC: &[u8; 20] = b"MICROSOFT*XBOX*MEDIA";
-
-#[derive(Debug)]
-enum IsoType {
-    XSF,
-    XGD2,
-    XGD3
-}
 
 #[derive(Debug)]
 enum IsoFile {
@@ -43,7 +35,6 @@ struct ActiveIso {
 struct IsoEntry {
     path: PathBuf,
     filename: String,
-    filesize: u64,
     data_start: u64,
     sector_count: u64,
     has_type1_file: u32,
@@ -78,31 +69,26 @@ struct Server {
 }
 
 async fn get_data_start(file: &mut File) -> Result<u64, Box<dyn std::error::Error>> {
-    let offsets: [(u64, u64); 3] = [
-        // XGD2 / GDF
-        (0xfda0000, 0xfd90000),
-        // XGD3
-        (0x2090000, 0x2080000),
-        // XSF
-        (0x10000, 0x0)
+    const OFFSETS: [(u64, u64); 3] = [
+        (0xfda0000, 0xfd90000), // XGD2 / GDF
+        (0x2090000, 0x2080000), // XGD3
+        (0x10000, 0x0),         // XSF
     ];
 
     let len = file.metadata().await?.len();
-    let mut buf = vec![0u8; XGD_MAGIC.len()];
-    for (offset, data_start) in offsets {
-        if len >= offset + XGD_MAGIC.len() as u64 {
+    let mut buf = [0u8; 20]; // XGD_MAGIC.len() = 20
+    
+    for &(offset, data_start) in &OFFSETS {
+        if len >= offset + buf.len() as u64 {
             file.seek(std::io::SeekFrom::Start(offset)).await?;
             file.read_exact(&mut buf).await?;
             
-            if buf == XGD_MAGIC {
+            if &buf == XGD_MAGIC {
                 return Ok(data_start);
             }
         }
     }
-
-    // No XGD Magic found in expected offsets
-    // Assume data starts @ 0x0
-    Ok(0)
+    Ok(0) // No XGD Magic found, assume data starts @ 0x0
 }
 
 async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive: bool) -> Result<Vec<IsoEntry>, Box<dyn std::error::Error>> {
@@ -111,40 +97,24 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
     // First, throw out obsolete entries
     ret.retain(|x| x.path.exists());
 
-    // Assemble glob patterns for both .iso and .ziso files
+    // Assemble glob patterns for both .iso and .ziso files (case-insensitive)
     #[cfg(feature = "ziso")]
-    let patterns = vec!["*.iso", "*.ziso"];
+    let patterns = vec!["*.iso", "*.ISO", "*.ziso", "*.ZISO"];
     #[cfg(not(feature = "ziso"))]
-    let patterns = vec!["*.iso"];
+    let patterns = vec!["*.iso", "*.ISO"];
     
     let mut all_files = Vec::new();
     
     for pattern in patterns {
-        let isofiles_glob_pattern = {
-            let mut path_glob = directory.to_str().unwrap().to_string();
-            if recursive {
-                path_glob += std::path::MAIN_SEPARATOR_STR;
-                path_glob += "**"
-            }
-
-            path_glob += std::path::MAIN_SEPARATOR_STR;
-            path_glob += pattern;
-
-            path_glob
+        let isofiles_glob_pattern = if recursive {
+            format!("{}{s}**{s}{}", directory.display(), pattern, s = std::path::MAIN_SEPARATOR_STR)
+        } else {
+            format!("{}{}{}", directory.display(), std::path::MAIN_SEPARATOR_STR, pattern)
         };
 
-        // Search for new files
         let files: Vec<PathBuf> = glob(&isofiles_glob_pattern)?
             .filter_map(|x| x.ok())
-            // Filter for existing files
-            .filter(|x|x.is_file())
-            // Filter for new files (PathBuf not identical to any previous entry)
-            .filter(|x|
-                ret
-                    .iter()
-                    .find(|y|y.path == *x)
-                    .is_none()
-            )
+            .filter(|x| x.is_file() && !ret.iter().any(|y| y.path == *x))
             .collect();
         
         all_files.extend(files);
@@ -153,14 +123,15 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
     for filepath in all_files {
         let filesize = filepath.metadata()?.len();
         let filename = filepath.file_name()
-            .unwrap_or(OsStr::new(""))
-            .to_str()
-            .unwrap_or("")
-            .to_string();
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         
-        // Check if it's a ZISO file
+        // Check if it's a ZISO file (case-insensitive)
         #[cfg(feature = "ziso")]
-        let is_ziso = filepath.extension().and_then(|s| s.to_str()) == Some("ziso");
+        let is_ziso = filepath.extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.eq_ignore_ascii_case("ziso"))
+            .unwrap_or(false);
         #[cfg(not(feature = "ziso"))]
         let is_ziso = false;
         
@@ -174,9 +145,9 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
                     let files_result = reader.get_files();
                     match files_result {
                         Ok(files) => {
-                            // Find the first .iso file in the archive
+                            // Find the first .iso file in the archive (case-insensitive)
                             let iso_file = files.iter()
-                                .find(|f| f.ends_with(".iso") || f.ends_with(".ISO"));
+                                .find(|f| f.to_lowercase().ends_with(".iso"));
                             
                             if let Some(iso_path) = iso_file {
                                 if let Some(size) = reader.file_size(iso_path) {
@@ -225,7 +196,6 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
         let entry = IsoEntry {
             path: filepath.clone(),
             filename,
-            filesize: actual_filesize,
             data_start,
             sector_count: actual_filesize / SECTOR_SIZE as u64,
             has_type1_file: 0,
@@ -238,14 +208,12 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
 }
 
 async fn scan_iso_files_initial(directory: &Path, recursive: bool) -> Result<Vec<IsoEntry>, Box<dyn std::error::Error>> {
-    get_iso_files(&vec![], directory, recursive).await
+    get_iso_files(&Vec::new(), directory, recursive).await
 }
 
 impl Server {
-    async fn disable_current_iso(&mut self) {
-        if self.active_file.is_some() {
-            self.active_file = None;
-        }
+    fn disable_current_iso(&mut self) {
+        self.active_file = None;
     }
 
     async fn handler(&mut self, mut socket: tokio::net::TcpStream) -> Result<(), Box<dyn std::error::Error>> {
@@ -255,7 +223,7 @@ impl Server {
                 Ok(size) => {
                     if size == 0 {
                         eprintln!("EOF - Client '{:?}' disconnected", socket.peer_addr());
-                        self.disable_current_iso().await;
+                        self.disable_current_iso();
                         break
                     }
 
@@ -272,31 +240,20 @@ impl Server {
                             socket.try_write(reply)?;
                         },
                         Cmd::GetIsoSize => {
-                            // Get iso sector count for mounted file
-                            // If no iso is mounted, reply with 0
-                            let sector_count = match &self.active_file {
-                                Some(iso) => {
-                                    iso.metadata.sector_count
-                                },
-                                None => 0,
-                            };
+                            let sector_count = self.active_file.as_ref()
+                                .map(|iso| iso.metadata.sector_count as u32)
+                                .unwrap_or(0);
 
-                            let mut resp = vec![];
-                            resp.extend_from_slice(&(sector_count as u32).to_be_bytes());
-                            resp.extend_from_slice(&(SECTOR_SIZE as u32).to_be_bytes());
+                            let mut resp = [0u8; 8];
+                            resp[0..4].copy_from_slice(&sector_count.to_be_bytes());
+                            resp[4..8].copy_from_slice(&(SECTOR_SIZE as u32).to_be_bytes());
 
                             socket.try_write(&resp)?;
                         },
                         Cmd::HasType1File => {
-                            let maybe_iso = self.files.get(msg.iso_index as usize);
-                            let has_type1_file = match maybe_iso {
-                                Some(iso) => {
-                                    iso.has_type1_file
-                                },
-                                None => {
-                                    0
-                                }
-                            };
+                            let has_type1_file = self.files.get(msg.iso_index as usize)
+                                .map(|iso| iso.has_type1_file)
+                                .unwrap_or(0);
 
                             socket.try_write(&has_type1_file.to_be_bytes())?;
                         },
@@ -329,18 +286,14 @@ impl Server {
                             }
                         },
                         Cmd::GetIsoName => {
-                            let maybe_iso = self.files.get(msg.iso_index as usize);
-                            let filename = match maybe_iso {
-                                Some(iso) => {
-                                    &iso.filename
-                                },
-                                None => {
-                                    ""
-                                }
-                            };
-                            let mut response = filename.as_bytes().to_vec();
-                            // The request contains the expected bytecount, so we extend the slice here
-                            response.resize(msg.length as usize, 0);
+                            let filename = self.files.get(msg.iso_index as usize)
+                                .map(|iso| iso.filename.as_str())
+                                .unwrap_or("");
+                            
+                            let mut response = vec![0u8; msg.length as usize];
+                            let bytes = filename.as_bytes();
+                            let copy_len = bytes.len().min(response.len());
+                            response[..copy_len].copy_from_slice(&bytes[..copy_len]);
 
                             socket.try_write(&response)?;
                         },
@@ -359,9 +312,8 @@ impl Server {
 
                             if normalized == "[Disable Current ISO]" {
                                 println!("Unmounting current iso...");
-                                self.disable_current_iso().await;
-                                let code = 0u32;
-                                socket.try_write(&code.to_be_bytes())?;
+                                self.disable_current_iso();
+                                socket.try_write(&0u32.to_be_bytes())?;
                             } else {
                                 let found = self.files.iter().find(|x| x.filename.ends_with(&normalized));
     
@@ -369,9 +321,12 @@ impl Server {
                                     Some(iso) => {
                                         println!("Mounting: {:?}", iso.path);
                                         
-                                        // Check if it's a ZISO file
+                                        // Check if it's a ZISO file (case-insensitive)
                                         #[cfg(feature = "ziso")]
-                                        let is_ziso = iso.path.extension().and_then(|s| s.to_str()) == Some("ziso");
+                                        let is_ziso = iso.path.extension()
+                                            .and_then(|s| s.to_str())
+                                            .map(|s| s.eq_ignore_ascii_case("ziso"))
+                                            .unwrap_or(false);
                                         #[cfg(not(feature = "ziso"))]
                                         let is_ziso = false;
                                         
@@ -383,8 +338,9 @@ impl Server {
                                                     // Find the ISO file inside
                                                     match reader.get_files() {
                                                         Ok(files) => {
+                                                            // Find the first .iso file (case-insensitive)
                                                             let iso_file = files.iter()
-                                                                .find(|f| f.ends_with(".iso") || f.ends_with(".ISO"));
+                                                                .find(|f| f.to_lowercase().ends_with(".iso"));
                                                             
                                                             if let Some(inner_path) = iso_file {
                                                                 println!("Found ISO in ZISO: {}", inner_path);
@@ -457,10 +413,9 @@ impl Server {
 }
 
 fn print_usage(bin_name: &str) {
-    eprintln!("Usage: {} [-rbvh] [iso directory path]", bin_name);
+    eprintln!("Usage: {} [-rvh] [iso directory path]", bin_name);
     eprintln!("\nArgs:");
     eprintln!("\t-r - Recursive ISO scanning");
-    eprintln!("\t-b - Enable workaround for big iso library (132+ games)");
     eprintln!("\t-v - Verbose output");
     eprintln!("\t-h - Print help / usage")
 }
