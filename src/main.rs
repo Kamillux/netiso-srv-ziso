@@ -24,6 +24,7 @@ enum IsoType {
     XGD3
 }
 
+#[derive(Debug)]
 enum IsoFile {
     Regular(File),
     Zarchive { reader: Arc<ZArchiveReader>, inner_path: String },
