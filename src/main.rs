@@ -8,8 +8,10 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::net::TcpListener;
+use zarchive::reader::ZArchiveReader;
 
 const NETISO_SRV_PORT: u16 = 4323;
 const SECTOR_SIZE: u16 = 0x800; // 2048
@@ -22,9 +24,14 @@ enum IsoType {
     XGD3
 }
 
+enum IsoFile {
+    Regular(File),
+    Zarchive { reader: Arc<ZArchiveReader>, inner_path: String },
+}
+
 #[derive(Debug)]
 struct ActiveIso {
-    file: File,
+    file: IsoFile,
     metadata: IsoEntry,
 }
 
@@ -100,56 +107,110 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
     // First, throw out obsolete entries
     ret.retain(|x| x.path.exists());
 
-    // Assemble glob pattern
-    let isofiles_glob_pattern = {
-        let mut path_glob = directory.to_str().unwrap().to_string();
-        if recursive {
+    // Assemble glob patterns for both .iso and .zar files
+    let patterns = vec!["*.iso", "*.zar"];
+    
+    let mut all_files = Vec::new();
+    
+    for pattern in patterns {
+        let isofiles_glob_pattern = {
+            let mut path_glob = directory.to_str().unwrap().to_string();
+            if recursive {
+                path_glob += std::path::MAIN_SEPARATOR_STR;
+                path_glob += "**"
+            }
+
             path_glob += std::path::MAIN_SEPARATOR_STR;
-            path_glob += "**"
-        }
+            path_glob += pattern;
 
-        path_glob += std::path::MAIN_SEPARATOR_STR;
-        path_glob += "*.iso";
+            path_glob
+        };
 
-        path_glob
-    };
+        // Search for new files
+        let files: Vec<PathBuf> = glob(&isofiles_glob_pattern)?
+            .filter_map(|x| x.ok())
+            // Filter for existing files
+            .filter(|x|x.is_file())
+            // Filter for new files (PathBuf not identical to any previous entry)
+            .filter(|x|
+                ret
+                    .iter()
+                    .find(|y|y.path == *x)
+                    .is_none()
+            )
+            .collect();
+        
+        all_files.extend(files);
+    }
 
-    // Search for new files
-    let files: Vec<PathBuf> = glob(&isofiles_glob_pattern)?
-        .filter_map(|x| x.ok())
-        // Filter for existing files
-        .filter(|x|x.is_file())
-        // Filter for new files (PathBuf not identical to any previous entry)
-        .filter(|x|
-            ret
-                .iter()
-                .find(|y|y.path == *x)
-                .is_none()
-        )
-        .collect();
-
-    for filepath in files {
+    for filepath in all_files {
         let filesize = filepath.metadata()?.len();
         let filename = filepath.file_name()
             .unwrap_or(OsStr::new(""))
             .to_str()
             .unwrap_or("")
             .to_string();
-        let mut handle = File::open(&filepath).await?;
-        let data_start =  match get_data_start(&mut handle).await {
-            Ok(data_start) => data_start,
-            Err(err) => {
-                eprintln!("Invalid iso file: {filepath:?}, err: {err:?}");
-                continue;
+        
+        // Check if it's a ZAR file
+        let is_zar = filepath.extension().and_then(|s| s.to_str()) == Some("zar");
+        
+        let (data_start, actual_filesize) = if is_zar {
+            // For ZAR files, we need to open the archive and find the ISO inside
+            match ZArchiveReader::open(&filepath) {
+                Ok(reader) => {
+                    // Look for an ISO file inside the archive
+                    // Usually ZAR archives for Xbox 360 contain a single ISO file
+                    let files_result = reader.get_files();
+                    match files_result {
+                        Ok(files) => {
+                            // Find the first .iso file in the archive
+                            let iso_file = files.iter()
+                                .find(|f| f.ends_with(".iso") || f.ends_with(".ISO"));
+                            
+                            if let Some(iso_path) = iso_file {
+                                if let Some(size) = reader.file_size(iso_path) {
+                                    // For ZAR files, data_start is 0 as we read directly from the decompressed stream
+                                    println!("Found ISO '{}' in ZAR archive '{}'", iso_path, filename);
+                                    (0, size as u64)
+                                } else {
+                                    eprintln!("Could not get size of ISO in ZAR: {filepath:?}");
+                                    continue;
+                                }
+                            } else {
+                                eprintln!("No ISO file found in ZAR archive: {filepath:?}");
+                                continue;
+                            }
+                        },
+                        Err(err) => {
+                            eprintln!("Failed to list files in ZAR: {filepath:?}, err: {err:?}");
+                            continue;
+                        }
+                    }
+                },
+                Err(err) => {
+                    eprintln!("Invalid ZAR file: {filepath:?}, err: {err:?}");
+                    continue;
+                }
             }
+        } else {
+            // Regular ISO file
+            let mut handle = File::open(&filepath).await?;
+            let data_start = match get_data_start(&mut handle).await {
+                Ok(data_start) => data_start,
+                Err(err) => {
+                    eprintln!("Invalid iso file: {filepath:?}, err: {err:?}");
+                    continue;
+                }
+            };
+            (data_start, filesize)
         };
 
         let entry = IsoEntry {
             path: filepath.clone(),
             filename,
-            filesize,
+            filesize: actual_filesize,
             data_start,
-            sector_count: filesize / SECTOR_SIZE as u64,
+            sector_count: actual_filesize / SECTOR_SIZE as u64,
             has_type1_file: 0,
         };
 
@@ -226,8 +287,25 @@ impl Server {
                             if let Some(active) = self.active_file.as_mut() {
                                 let mut buf = vec![0u8; msg.length as usize];
 
-                                active.file.seek(std::io::SeekFrom::Start(msg.offset)).await?;
-                                active.file.read_exact(&mut buf).await?;
+                                match &mut active.file {
+                                    IsoFile::Regular(file) => {
+                                        // Regular ISO file - use async file I/O
+                                        file.seek(std::io::SeekFrom::Start(msg.offset)).await?;
+                                        file.read_exact(&mut buf).await?;
+                                    },
+                                    IsoFile::Zarchive { reader, inner_path } => {
+                                        // ZAR compressed file - decompress on-the-fly
+                                        // The zarchive library handles decompression transparently
+                                        let offset_in_iso = msg.offset - active.metadata.data_start;
+                                        
+                                        if let Some(data) = reader.read_from_file(inner_path, offset_in_iso as usize, msg.length as usize) {
+                                            buf = data;
+                                        } else {
+                                            eprintln!("Failed to read from ZAR file at offset {}", msg.offset);
+                                            // Return zeros on error
+                                        }
+                                    }
+                                }
 
                                 socket.try_write(&buf)?;
                             }
@@ -272,9 +350,57 @@ impl Server {
                                 let code: u32 = match found {
                                     Some(iso) => {
                                         println!("Mounting: {:?}", iso.path);
-                                        let file = File::open(&iso.path).await?;
-                                        self.active_file = Some(ActiveIso { file: file, metadata: iso.to_owned() });
-                                        1 // success
+                                        
+                                        // Check if it's a ZAR file
+                                        let is_zar = iso.path.extension().and_then(|s| s.to_str()) == Some("zar");
+                                        
+                                        if is_zar {
+                                            // Open ZAR archive
+                                            match ZArchiveReader::open(&iso.path) {
+                                                Ok(reader) => {
+                                                    // Find the ISO file inside
+                                                    match reader.get_files() {
+                                                        Ok(files) => {
+                                                            let iso_file = files.iter()
+                                                                .find(|f| f.ends_with(".iso") || f.ends_with(".ISO"));
+                                                            
+                                                            if let Some(inner_path) = iso_file {
+                                                                println!("Found ISO in ZAR: {}", inner_path);
+                                                                let file = IsoFile::Zarchive { 
+                                                                    reader: Arc::new(reader), 
+                                                                    inner_path: inner_path.clone() 
+                                                                };
+                                                                self.active_file = Some(ActiveIso { file, metadata: iso.to_owned() });
+                                                                1 // success
+                                                            } else {
+                                                                eprintln!("MountIso: No ISO found in ZAR archive '{}'!", iso.filename);
+                                                                0 // error
+                                                            }
+                                                        },
+                                                        Err(err) => {
+                                                            eprintln!("MountIso: Failed to read ZAR archive '{}': {:?}", iso.filename, err);
+                                                            0 // error
+                                                        }
+                                                    }
+                                                },
+                                                Err(err) => {
+                                                    eprintln!("MountIso: Failed to open ZAR archive '{}': {:?}", iso.filename, err);
+                                                    0 // error
+                                                }
+                                            }
+                                        } else {
+                                            // Regular ISO file
+                                            match File::open(&iso.path).await {
+                                                Ok(file) => {
+                                                    self.active_file = Some(ActiveIso { file: IsoFile::Regular(file), metadata: iso.to_owned() });
+                                                    1 // success
+                                                },
+                                                Err(err) => {
+                                                    eprintln!("MountIso: Failed to open ISO '{}': {:?}", iso.filename, err);
+                                                    0 // error
+                                                }
+                                            }
+                                        }
                                     },
                                     None => {
                                         eprintln!("MountIso: Failed to find ISO '{normalized}' !");

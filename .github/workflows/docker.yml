@@ -12,7 +12,7 @@ permissions:
   packages: write
 
 env:
-  REGISTRY_IMAGE: ghcr.io/tuxuser/netiso-srv-rs
+  REGISTRY_IMAGE: ghcr.io/xeroxxx/netiso-srv-rs
 
 jobs:
   build-docker:
@@ -20,7 +20,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64-unknown-linux-musl, arm-unknown-linux-musleabi, i686-unknown-linux-musl, x86_64-unknown-linux-musl]
+        arch:
+          [
+            aarch64-unknown-linux-musl,
+            arm-unknown-linux-musleabi,
+            i686-unknown-linux-musl,
+            x86_64-unknown-linux-musl,
+          ]
         include:
           - arch: aarch64-unknown-linux-musl
             buildx-platform: linux/arm64
@@ -110,15 +116,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-#      - name: Docker Hub Description
-#        if: github.event_name != 'pull_request'
-#        uses: peter-evans/dockerhub-description@v4
-#        with:
-#          username: ${{ secrets.DOCKERHUB_USERNAME }}
-#          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-#          repository: tuxuser/netiso-srv-rs
-#          readme-filepath: ./README.md
-#          short-description: "Alternative NetISO server for x360 netiso dashlaunch plugin"
+  #      - name: Docker Hub Description
+  #        if: github.event_name != 'pull_request'
+  #        uses: peter-evans/dockerhub-description@v4
+  #        with:
+  #          username: ${{ secrets.DOCKERHUB_USERNAME }}
+  #          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+  #          repository: tuxuser/netiso-srv-rs
+  #          readme-filepath: ./README.md
+  #          short-description: "Alternative NetISO server for x360 netiso dashlaunch plugin"
 
   merge:
     runs-on: ubuntu-latest
