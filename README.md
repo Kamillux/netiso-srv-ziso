@@ -56,6 +56,9 @@ The built-in converter works on both Windows and Linux:
 netiso-srv -i /path/to/game.iso
 # Creates: /path/to/game.ziso
 ```
+Windows Release: netiso-srv-x86_64-pc-windows-msvc
+Windows MinGW: netiso-srv-x86_64-pc-windows-gnu
+Linux Release: choose according to your architecture
 
 This method:
 
