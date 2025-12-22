@@ -34,11 +34,13 @@ Options:
     `-i <file.iso>` - Convert ISO to ZISO format (creates file.ziso and exits)
 
 **Server mode:**
+
 ```
 netiso-srv [-r] [-v] [directory with *.iso files]
 ```
 
 **Convert mode:**
+
 ```
 netiso-srv -i <file.iso>
 ```
@@ -56,6 +58,7 @@ netiso-srv -i /path/to/game.iso
 ```
 
 This method:
+
 - ✅ Works natively on Windows and Linux
 - ✅ Creates properly formatted ZISO files compatible with the server
 - ✅ Automatic compression with optimal settings
@@ -79,7 +82,7 @@ The resulting .ziso files can be placed in your NetISO directory alongside regul
 
 ### Benefits of ZISO Format
 
-- **Storage savings**: 30-60% smaller than uncompressed ISOs (varies by game)
+- **Storage savings**: 10-30% smaller than uncompressed ISOs (varies by game)
 - **Fast random access**: Block-based compression allows quick seeking
 - **Transparent**: Xbox 360 doesn't know the file is compressed
 
