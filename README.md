@@ -4,24 +4,25 @@
 
 # NetISO server daemon
 
-NetISO server for modded Xbox 360 that supports both uncompressed ISO files and compressed ZAR (ZArchive) format with real-time decompression.
+NetISO server for modded Xbox 360 that supports both uncompressed ISO files and compressed ZISO (ZArchive-compressed ISO) format with real-time decompression.
 
 ## Features
 
 - Serves Xbox 360 ISOs over network to modded consoles
-- **NEW**: Support for compressed ZAR (ZArchive) ISO files
+- **NEW**: Support for compressed ZISO (ZArchive-compressed ISO) files
 - Real-time decompression on server-side (transparent to Xbox 360)
-- Automatic detection of both .iso and .zar files
+- Automatic detection of both .iso and .ziso files
 - Recursive directory scanning
 - Docker support
 
 ## Supported Formats
 
 - **Uncompressed ISO files** (.iso) - Direct streaming
-- **Compressed ZAR files** (.zar) - Decompressed on-the-fly using zstd
-  - Based on Xenia emulator's ZArchive format
+- **Compressed ZISO files** (.ziso) - Decompressed on-the-fly using zstd
+  - ZArchive-compressed ISO format (single .iso file inside archive)
   - Uses 64KiB block compression for efficient random access
   - Significantly reduces storage requirements
+  - **Note**: Different from Xenia's .zar format (which contains extracted files)
 
 ## Usage
 
@@ -33,21 +34,25 @@ Options:
 
 Run: `netiso-srv [-r] [-v] [-h] [directory with *.iso files]`
 
-## Creating ZAR Archives
+## Creating ZISO Archives
 
-To compress your Xbox 360 ISOs to ZAR format, you can use the Xenia emulator or ZArchive tools:
+To compress your Xbox 360 ISOs to ZISO format, use the Xenia emulator's ZArchive tool and rename the output:
 
 ### Using Xenia Canary
 
 1. Download [Xenia Canary](https://github.com/xenia-canary/xenia-canary/releases)
 2. Launch Xenia Canary
 3. Go to File → Create ZArchive
-4. Select your ISO file(s)
-5. Choose output location for .zar file(s)
+4. Select your directory containing single ISO file
+5. Choose output location
+6. **Important**: Rename the resulting `.zar` files to `.ziso`
+   - Example: `Game.zar` → `Game.ziso`
 
-The resulting .zar files can be placed in your NetISO directory alongside regular .iso files.
+**Why rename?** Xenia's native .zar format contains extracted game files, while our .ziso format contains a compressed ISO file. The renaming makes this distinction clear.
 
-### Benefits of ZAR Format
+The resulting .ziso files can be placed in your NetISO directory alongside regular .iso files.
+
+### Benefits of ZISO Format
 
 - **Storage savings**: 30-60% smaller than uncompressed ISOs (varies by game)
 - **Fast random access**: Block-based compression allows quick seeking

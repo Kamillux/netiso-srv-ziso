@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["zar"]
-zar = ["dep:zarchive"]
+default = ["ziso"]
+ziso = ["dep:zarchive"]
 
 [dependencies]
 binrw = "0.14.1"

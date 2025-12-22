@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::net::TcpListener;
 
-#[cfg(feature = "zar")]
+#[cfg(feature = "ziso")]
 use zarchive::reader::ZArchiveReader;
 
 const NETISO_SRV_PORT: u16 = 4323;
@@ -29,8 +29,8 @@ enum IsoType {
 #[derive(Debug)]
 enum IsoFile {
     Regular(File),
-    #[cfg(feature = "zar")]
-    Zarchive { reader: Arc<ZArchiveReader>, inner_path: String },
+    #[cfg(feature = "ziso")]
+    Ziso { reader: Arc<ZArchiveReader>, inner_path: String },
 }
 
 #[derive(Debug)]
@@ -111,10 +111,10 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
     // First, throw out obsolete entries
     ret.retain(|x| x.path.exists());
 
-    // Assemble glob patterns for both .iso and .zar files
-    #[cfg(feature = "zar")]
-    let patterns = vec!["*.iso", "*.zar"];
-    #[cfg(not(feature = "zar"))]
+    // Assemble glob patterns for both .iso and .ziso files
+    #[cfg(feature = "ziso")]
+    let patterns = vec!["*.iso", "*.ziso"];
+    #[cfg(not(feature = "ziso"))]
     let patterns = vec!["*.iso"];
     
     let mut all_files = Vec::new();
@@ -158,19 +158,19 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
             .unwrap_or("")
             .to_string();
         
-        // Check if it's a ZAR file
-        #[cfg(feature = "zar")]
-        let is_zar = filepath.extension().and_then(|s| s.to_str()) == Some("zar");
-        #[cfg(not(feature = "zar"))]
-        let is_zar = false;
+        // Check if it's a ZISO file
+        #[cfg(feature = "ziso")]
+        let is_ziso = filepath.extension().and_then(|s| s.to_str()) == Some("ziso");
+        #[cfg(not(feature = "ziso"))]
+        let is_ziso = false;
         
-        let (data_start, actual_filesize) = if is_zar {
-            // For ZAR files, we need to open the archive and find the ISO inside
-            #[cfg(feature = "zar")]
+        let (data_start, actual_filesize) = if is_ziso {
+            // For ZISO files, we need to open the archive and find the ISO inside
+            #[cfg(feature = "ziso")]
             match ZArchiveReader::open(&filepath) {
                 Ok(reader) => {
                     // Look for an ISO file inside the archive
-                    // Usually ZAR archives for Xbox 360 contain a single ISO file
+                    // ZISO archives contain a single compressed ISO file
                     let files_result = reader.get_files();
                     match files_result {
                         Ok(files) => {
@@ -180,33 +180,33 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
                             
                             if let Some(iso_path) = iso_file {
                                 if let Some(size) = reader.file_size(iso_path) {
-                                    // For ZAR files, data_start is 0 as we read directly from the decompressed stream
-                                    println!("Found ISO '{}' in ZAR archive '{}'", iso_path, filename);
+                                    // For ZISO files, data_start is 0 as we read directly from the decompressed stream
+                                    println!("Found ISO '{}' in ZISO archive '{}'", iso_path, filename);
                                     (0, size as u64)
                                 } else {
-                                    eprintln!("Could not get size of ISO in ZAR: {filepath:?}");
+                                    eprintln!("Could not get size of ISO in ZISO: {filepath:?}");
                                     continue;
                                 }
                             } else {
-                                eprintln!("No ISO file found in ZAR archive: {filepath:?}");
+                                eprintln!("No ISO file found in ZISO archive: {filepath:?}");
                                 continue;
                             }
                         },
                         Err(err) => {
-                            eprintln!("Failed to list files in ZAR: {filepath:?}, err: {err:?}");
+                            eprintln!("Failed to list files in ZISO: {filepath:?}, err: {err:?}");
                             continue;
                         }
                     }
                 },
                 Err(err) => {
-                    eprintln!("Invalid ZAR file: {filepath:?}, err: {err:?}");
+                    eprintln!("Invalid ZISO file: {filepath:?}, err: {err:?}");
                     continue;
                 }
             }
-            #[cfg(not(feature = "zar"))]
+            #[cfg(not(feature = "ziso"))]
             {
-                // ZAR support not compiled in
-                eprintln!("ZAR file found but support not compiled: {filepath:?}");
+                // ZISO support not compiled in
+                eprintln!("ZISO file found but support not compiled: {filepath:?}");
                 continue;
             }
         } else {
@@ -310,16 +310,16 @@ impl Server {
                                         file.seek(std::io::SeekFrom::Start(msg.offset)).await?;
                                         file.read_exact(&mut buf).await?;
                                     },
-                                    #[cfg(feature = "zar")]
-                                    IsoFile::Zarchive { reader, inner_path } => {
-                                        // ZAR compressed file - decompress on-the-fly
+                                    #[cfg(feature = "ziso")]
+                                    IsoFile::Ziso { reader, inner_path } => {
+                                        // ZISO compressed file - decompress on-the-fly
                                         // The zarchive library handles decompression transparently
                                         let offset_in_iso = msg.offset - active.metadata.data_start;
                                         
                                         if let Some(data) = reader.read_from_file(inner_path, offset_in_iso as usize, msg.length as usize) {
                                             buf = data;
                                         } else {
-                                            eprintln!("Failed to read from ZAR file at offset {}", msg.offset);
+                                            eprintln!("Failed to read from ZISO file at offset {}", msg.offset);
                                             // Return zeros on error
                                         }
                                     }
@@ -369,15 +369,15 @@ impl Server {
                                     Some(iso) => {
                                         println!("Mounting: {:?}", iso.path);
                                         
-                                        // Check if it's a ZAR file
-                                        #[cfg(feature = "zar")]
-                                        let is_zar = iso.path.extension().and_then(|s| s.to_str()) == Some("zar");
-                                        #[cfg(not(feature = "zar"))]
-                                        let is_zar = false;
+                                        // Check if it's a ZISO file
+                                        #[cfg(feature = "ziso")]
+                                        let is_ziso = iso.path.extension().and_then(|s| s.to_str()) == Some("ziso");
+                                        #[cfg(not(feature = "ziso"))]
+                                        let is_ziso = false;
                                         
-                                        if is_zar {
-                                            // Open ZAR archive
-                                            #[cfg(feature = "zar")]
+                                        if is_ziso {
+                                            // Open ZISO archive
+                                            #[cfg(feature = "ziso")]
                                             match ZArchiveReader::open(&iso.path) {
                                                 Ok(reader) => {
                                                     // Find the ISO file inside
@@ -387,32 +387,32 @@ impl Server {
                                                                 .find(|f| f.ends_with(".iso") || f.ends_with(".ISO"));
                                                             
                                                             if let Some(inner_path) = iso_file {
-                                                                println!("Found ISO in ZAR: {}", inner_path);
-                                                                let file = IsoFile::Zarchive { 
+                                                                println!("Found ISO in ZISO: {}", inner_path);
+                                                                let file = IsoFile::Ziso { 
                                                                     reader: Arc::new(reader), 
                                                                     inner_path: inner_path.clone() 
                                                                 };
                                                                 self.active_file = Some(ActiveIso { file, metadata: iso.to_owned() });
                                                                 1 // success
                                                             } else {
-                                                                eprintln!("MountIso: No ISO found in ZAR archive '{}'!", iso.filename);
+                                                                eprintln!("MountIso: No ISO found in ZISO archive '{}'!", iso.filename);
                                                                 0 // error
                                                             }
                                                         },
                                                         Err(err) => {
-                                                            eprintln!("MountIso: Failed to read ZAR archive '{}': {:?}", iso.filename, err);
+                                                            eprintln!("MountIso: Failed to read ZISO archive '{}': {:?}", iso.filename, err);
                                                             0 // error
                                                         }
                                                     }
                                                 },
                                                 Err(err) => {
-                                                    eprintln!("MountIso: Failed to open ZAR archive '{}': {:?}", iso.filename, err);
+                                                    eprintln!("MountIso: Failed to open ZISO archive '{}': {:?}", iso.filename, err);
                                                     0 // error
                                                 }
                                             }
-                                            #[cfg(not(feature = "zar"))]
+                                            #[cfg(not(feature = "ziso"))]
                                             {
-                                                eprintln!("MountIso: ZAR support not compiled in");
+                                                eprintln!("MountIso: ZISO support not compiled in");
                                                 0 // error
                                             }
                                         } else {
