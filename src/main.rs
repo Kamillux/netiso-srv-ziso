@@ -97,7 +97,7 @@ async fn get_data_start(file: &mut File) -> Result<u64, Box<dyn std::error::Erro
     Ok(0) // No XGD Magic found, assume data starts @ 0x0
 }
 
-async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive: bool) -> Result<Vec<IsoEntry>, Box<dyn std::error::Error>> {
+async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive: bool, verbose: bool) -> Result<Vec<IsoEntry>, Box<dyn std::error::Error>> {
     let mut ret = old_entries.clone();
 
     // First, throw out obsolete entries
@@ -158,7 +158,9 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
                             if let Some(iso_path) = iso_file {
                                 if let Some(size) = reader.file_size(iso_path) {
                                     // For ZISO files, data_start is 0 as we read directly from the decompressed stream
-                                    println!("Found ISO '{}' in ZISO archive '{}'", iso_path, filename);
+                                    if verbose {
+                                        println!("Found ISO '{}' in ZISO archive '{}'", iso_path, filename);
+                                    }
                                     (0, size as u64)
                                 } else {
                                     eprintln!("Could not get size of ISO in ZISO: {filepath:?}");
@@ -213,8 +215,8 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
     Ok(ret)
 }
 
-async fn scan_iso_files_initial(directory: &Path, recursive: bool) -> Result<Vec<IsoEntry>, Box<dyn std::error::Error>> {
-    get_iso_files(&Vec::new(), directory, recursive).await
+async fn scan_iso_files_initial(directory: &Path, recursive: bool, verbose: bool) -> Result<Vec<IsoEntry>, Box<dyn std::error::Error>> {
+    get_iso_files(&Vec::new(), directory, recursive, verbose).await
 }
 
 impl Server {
@@ -564,7 +566,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let filepath = Path::new(&args[1]);
 
     println!("Enumerating ISOs in {filepath:?}...");
-    let mut files = scan_iso_files_initial(filepath, recursive_scan).await?;
+    let mut files = scan_iso_files_initial(filepath, recursive_scan, verbose).await?;
 
     if files.is_empty() {
         return Err("No iso files enumerated".into());
@@ -583,7 +585,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("Got connection from: {:?}", &socket.peer_addr());
 
         // Update list of isos
-        files = get_iso_files(&files, filepath, recursive_scan).await?;
+        files = get_iso_files(&files, filepath, recursive_scan, verbose).await?;
 
         let files_clone = files.clone();
         tokio::spawn(async move {
