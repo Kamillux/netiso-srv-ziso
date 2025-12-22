@@ -1,6 +1,6 @@
-[![Build](https://github.com/tuxuser/netiso-srv/actions/workflows/build.yml/badge.svg)](https://github.com/tuxuser/netiso-srv/actions/workflows/build.yml)
-[![Docker image tags](https://ghcr-badge.egpl.dev/tuxuser/netiso-srv-rs/tags?color=%2344cc11&ignore=latest&n=3&label=image+tags&trim=)](https://github.com/tuxuser/netiso-srv/pkgs/container/netiso-srv-rs)
-[![GitHub Release](https://img.shields.io/github/v/release/tuxuser/netiso-srv)](https://github.com/tuxuser/netiso-srv/releases/latest)
+[![Build](https://github.com/xeroxxx/netiso-srv/actions/workflows/build.yml/badge.svg)](https://github.com/xeroxxx/netiso-srv/actions/workflows/build.yml)
+[![Docker image tags](https://ghcr-badge.egpl.dev/xeroxxx/netiso-srv-rs/tags?color=%2344cc11&ignore=latest&n=3&label=image+tags&trim=)](https://github.com/xeroxxx/netiso-srv/pkgs/container/netiso-srv-rs)
+[![GitHub Release](https://img.shields.io/github/v/release/xeroxxx/netiso-srv)](https://github.com/xeroxxx/netiso-srv/releases/latest)
 
 # NetISO server daemon
 
@@ -57,14 +57,13 @@ The resulting .ziso files can be placed in your NetISO directory alongside regul
 - **Storage savings**: 30-60% smaller than uncompressed ISOs (varies by game)
 - **Fast random access**: Block-based compression allows quick seeking
 - **Transparent**: Xbox 360 doesn't know the file is compressed
-- **Network efficient**: Less data transferred over network
 
 ## Docker
 
 Spawn container standalone
 
 ```
-docker run -p 4323:4323 -v /path/to/isos:/mnt ghcr.io/tuxuser/netiso-srv-rs:latest
+docker run -p 4323:4323 -v /path/to/isos:/mnt ghcr.io/xeroxxx/netiso-srv-rs:latest
 ```
 
 or
