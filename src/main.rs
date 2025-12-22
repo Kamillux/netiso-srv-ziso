@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::net::TcpListener;
+
+#[cfg(feature = "zar")]
 use zarchive::reader::ZArchiveReader;
 
 const NETISO_SRV_PORT: u16 = 4323;
@@ -27,6 +29,7 @@ enum IsoType {
 #[derive(Debug)]
 enum IsoFile {
     Regular(File),
+    #[cfg(feature = "zar")]
     Zarchive { reader: Arc<ZArchiveReader>, inner_path: String },
 }
 
@@ -109,7 +112,10 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
     ret.retain(|x| x.path.exists());
 
     // Assemble glob patterns for both .iso and .zar files
+    #[cfg(feature = "zar")]
     let patterns = vec!["*.iso", "*.zar"];
+    #[cfg(not(feature = "zar"))]
+    let patterns = vec!["*.iso"];
     
     let mut all_files = Vec::new();
     
@@ -153,10 +159,14 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
             .to_string();
         
         // Check if it's a ZAR file
+        #[cfg(feature = "zar")]
         let is_zar = filepath.extension().and_then(|s| s.to_str()) == Some("zar");
+        #[cfg(not(feature = "zar"))]
+        let is_zar = false;
         
         let (data_start, actual_filesize) = if is_zar {
             // For ZAR files, we need to open the archive and find the ISO inside
+            #[cfg(feature = "zar")]
             match ZArchiveReader::open(&filepath) {
                 Ok(reader) => {
                     // Look for an ISO file inside the archive
@@ -192,6 +202,12 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
                     eprintln!("Invalid ZAR file: {filepath:?}, err: {err:?}");
                     continue;
                 }
+            }
+            #[cfg(not(feature = "zar"))]
+            {
+                // ZAR support not compiled in
+                eprintln!("ZAR file found but support not compiled: {filepath:?}");
+                continue;
             }
         } else {
             // Regular ISO file
@@ -294,6 +310,7 @@ impl Server {
                                         file.seek(std::io::SeekFrom::Start(msg.offset)).await?;
                                         file.read_exact(&mut buf).await?;
                                     },
+                                    #[cfg(feature = "zar")]
                                     IsoFile::Zarchive { reader, inner_path } => {
                                         // ZAR compressed file - decompress on-the-fly
                                         // The zarchive library handles decompression transparently
@@ -353,10 +370,14 @@ impl Server {
                                         println!("Mounting: {:?}", iso.path);
                                         
                                         // Check if it's a ZAR file
+                                        #[cfg(feature = "zar")]
                                         let is_zar = iso.path.extension().and_then(|s| s.to_str()) == Some("zar");
+                                        #[cfg(not(feature = "zar"))]
+                                        let is_zar = false;
                                         
                                         if is_zar {
                                             // Open ZAR archive
+                                            #[cfg(feature = "zar")]
                                             match ZArchiveReader::open(&iso.path) {
                                                 Ok(reader) => {
                                                     // Find the ISO file inside
@@ -388,6 +409,11 @@ impl Server {
                                                     eprintln!("MountIso: Failed to open ZAR archive '{}': {:?}", iso.filename, err);
                                                     0 // error
                                                 }
+                                            }
+                                            #[cfg(not(feature = "zar"))]
+                                            {
+                                                eprintln!("MountIso: ZAR support not compiled in");
+                                                0 // error
                                             }
                                         } else {
                                             // Regular ISO file

@@ -15,7 +15,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [aarch64-linux-android, aarch64-unknown-linux-musl, arm-unknown-linux-musleabi, i686-pc-windows-gnu, x86_64-pc-windows-gnu, i686-unknown-linux-musl, x86_64-unknown-linux-musl]
+        target:
+          [
+            aarch64-linux-android,
+            aarch64-unknown-linux-musl,
+            arm-unknown-linux-musleabi,
+            i686-pc-windows-gnu,
+            x86_64-pc-windows-gnu,
+            i686-unknown-linux-musl,
+            x86_64-unknown-linux-musl,
+          ]
 
     steps:
       - name: Checkout
@@ -28,7 +37,12 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build ${{ matrix.target }}
-        run: cross build --release --target ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
+            cross build --release --target ${{ matrix.target }} --no-default-features
+          else
+            cross build --release --target ${{ matrix.target }}
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

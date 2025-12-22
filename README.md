@@ -33,7 +33,6 @@ Options:
 
 Run: `netiso-srv [-r] [-v] [-h] [directory with *.iso files]`
 
-
 ## Creating ZAR Archives
 
 To compress your Xbox 360 ISOs to ZAR format, you can use the Xenia emulator or ZArchive tools:
@@ -55,10 +54,10 @@ The resulting .zar files can be placed in your NetISO directory alongside regula
 - **Transparent**: Xbox 360 doesn't know the file is compressed
 - **Network efficient**: Less data transferred over network
 
-
 ## Docker
 
 Spawn container standalone
+
 ```
 docker run -p 4323:4323 -v /path/to/isos:/mnt ghcr.io/tuxuser/netiso-srv-rs:latest
 ```
@@ -66,6 +65,7 @@ docker run -p 4323:4323 -v /path/to/isos:/mnt ghcr.io/tuxuser/netiso-srv-rs:late
 or
 
 Spawn via docker compose
+
 ```
 docker compose up
 ```
