@@ -13,6 +13,8 @@ use tokio::net::TcpListener;
 
 #[cfg(feature = "ziso")]
 use zarchive::reader::ZArchiveReader;
+#[cfg(feature = "ziso")]
+use zarchive::pack;
 
 const NETISO_SRV_PORT: u16 = 4323;
 const SECTOR_SIZE: u16 = 0x800; // 2048
@@ -424,11 +426,12 @@ impl Server {
 }
 
 fn print_usage(bin_name: &str) {
-    eprintln!("Usage: {} [-rvh] [iso directory path]", bin_name);
-    eprintln!("\nArgs:");
-    eprintln!("\t-r - Recursive ISO scanning");
-    eprintln!("\t-v - Verbose output");
-    eprintln!("\t-h - Print help / usage")
+    println!("Usage: {} [-rvh] [-i <iso_file>] [iso directory path]", bin_name);
+    println!("\nArgs:");
+    println!("\t-r - Recursive ISO scanning");
+    println!("\t-v - Verbose output");
+    println!("\t-h - Print help / usage");
+    println!("\t-i <file.iso> - Convert ISO to ZISO format (creates file.ziso)");
 }
 
 fn check_arg(args: &mut Vec<String>, arg_name: &str) -> bool {
@@ -441,6 +444,93 @@ fn check_arg(args: &mut Vec<String>, arg_name: &str) -> bool {
     }
 }
 
+fn get_arg_value(args: &mut Vec<String>, arg_name: &str) -> Option<String> {
+    match args.iter().position(|x| arg_name == x) {
+        Some(index) => {
+            if index + 1 < args.len() {
+                args.remove(index); // Remove the flag
+                Some(args.remove(index)) // Remove and return the value
+            } else {
+                args.remove(index);
+                None
+            }
+        },
+        None => None
+    }
+}
+
+#[cfg(feature = "ziso")]
+fn convert_iso_to_ziso(iso_path: &Path) -> Result<(), Box<dyn Error>> {
+    // Validate input file
+    if !iso_path.exists() {
+        return Err(format!("Input file does not exist: {}", iso_path.display()).into());
+    }
+    
+    if !iso_path.is_file() {
+        return Err(format!("Input path is not a file: {}", iso_path.display()).into());
+    }
+    
+    // Check if it's an ISO file
+    let extension = iso_path.extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if !extension.eq_ignore_ascii_case("iso") {
+        return Err("Input file must have .iso extension".into());
+    }
+    
+    // Create output path (same directory, .ziso extension)
+    let mut output_path = iso_path.to_path_buf();
+    output_path.set_extension("ziso");
+    
+    if output_path.exists() {
+        return Err(format!("Output file already exists: {}", output_path.display()).into());
+    }
+    
+    println!("Converting {} to ZISO format...", iso_path.display());
+    println!("Output: {}", output_path.display());
+    
+    // Create a temporary directory containing the ISO
+    let temp_dir = std::env::temp_dir().join(format!("netiso_convert_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir)?;
+    
+    // Copy ISO to temp directory
+    let iso_filename = iso_path.file_name().unwrap();
+    let temp_iso = temp_dir.join(iso_filename);
+    
+    println!("Preparing files...");
+    std::fs::copy(iso_path, &temp_iso)?;
+    
+    // Pack the temp directory into ZISO
+    println!("Compressing (this may take a while)...");
+    match pack(&temp_dir, &output_path) {
+        Ok(_) => {
+            println!("✓ Successfully created: {}", output_path.display());
+            
+            // Verify the archive
+            if let Ok(reader) = ZArchiveReader::open(&output_path) {
+                if let Ok(files) = reader.get_files() {
+                    println!("✓ Archive contains {} file(s)", files.len());
+                }
+            }
+        },
+        Err(e) => {
+            // Clean up on error
+            let _ = std::fs::remove_file(&output_path);
+            return Err(format!("Failed to create ZISO: {}", e).into());
+        }
+    }
+    
+    // Clean up temp directory
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    
+    Ok(())
+}
+
+#[cfg(not(feature = "ziso"))]
+fn convert_iso_to_ziso(_iso_path: &Path) -> Result<(), Box<dyn Error>> {
+    Err("ZISO support not compiled in. Rebuild with --features ziso".into())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut args: Vec<String> = env::args().collect();
@@ -448,13 +538,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let print_help = check_arg(&mut args, "-h"); // Help
     let recursive_scan = check_arg(&mut args, "-r"); // Recursive iso scanning
     let verbose = check_arg(&mut args, "-v"); // Verbose / Debug
+    let convert_input = get_arg_value(&mut args, "-i"); // Convert ISO to ZISO
 
-    if print_help {
-        print_usage(&args[0]);
-        return Ok(());
+    // Handle conversion mode
+    if let Some(iso_file) = convert_input {
+        let iso_path = Path::new(&iso_file);
+        return convert_iso_to_ziso(iso_path);
     }
-    else if args.len() < 2 {
-        eprintln!("ERROR: Invalid number of arguments!");
+
+    if print_help || args.len() < 2 {
+        if !print_help && args.len() < 2 {
+            println!("ERROR: Invalid number of arguments!\n");
+        }
         print_usage(&args[0]);
         return Ok(());
     }
