@@ -1,9 +1,9 @@
-version: "3"
-
 services:
   netiso:
-    image: ghcr.io/tuxuser/netiso-srv-rs:latest
+    image: ghcr.io/xeroxxx/netiso-srv-rs:latest
+    container_name: netiso-srv
     volumes:
       - /x360/games:/mnt
     ports:
-      - 4323:4323
+      - "4323:4323"
+    restart: unless-stopped
