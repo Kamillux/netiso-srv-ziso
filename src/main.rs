@@ -103,28 +103,32 @@ async fn get_iso_files(old_entries: &Vec<IsoEntry>, directory: &Path, recursive:
     // First, throw out obsolete entries
     ret.retain(|x| x.path.exists());
 
-    // Assemble glob patterns for both .iso and .ziso files (case-insensitive)
-    #[cfg(feature = "ziso")]
-    let patterns = vec!["*.iso", "*.ISO", "*.ziso", "*.ZISO"];
-    #[cfg(not(feature = "ziso"))]
-    let patterns = vec!["*.iso", "*.ISO"];
-    
-    let mut all_files = Vec::new();
-    
-    for pattern in patterns {
-        let isofiles_glob_pattern = if recursive {
-            format!("{}{s}**{s}{}", directory.display(), pattern, s = std::path::MAIN_SEPARATOR_STR)
-        } else {
-            format!("{}{}{}", directory.display(), std::path::MAIN_SEPARATOR_STR, pattern)
-        };
+    // Glob every file in the directory (recursively if requested) and filter
+    // by extension in Rust, which is fully case-insensitive and covers any
+    // mix such as .iso, .ISO, .Iso, .ziso, .ZISO, .Ziso, ...
+    let glob_pattern = if recursive {
+        format!("{}{s}**{s}*", directory.display(), s = std::path::MAIN_SEPARATOR_STR)
+    } else {
+        format!("{}{}*", directory.display(), std::path::MAIN_SEPARATOR_STR)
+    };
 
-        let files: Vec<PathBuf> = glob(&isofiles_glob_pattern)?
-            .filter_map(|x| x.ok())
-            .filter(|x| x.is_file() && !ret.iter().any(|y| y.path == *x))
-            .collect();
-        
-        all_files.extend(files);
-    }
+    let all_files: Vec<PathBuf> = glob(&glob_pattern)?
+        .filter_map(|x| x.ok())
+        .filter(|x| x.is_file())
+        .filter(|x| !ret.iter().any(|y| y.path == *x))
+        .filter(|x| {
+            let ext = x.extension().and_then(|s| s.to_str()).unwrap_or("");
+            if ext.eq_ignore_ascii_case("iso") {
+                return true;
+            }
+            #[cfg(feature = "ziso")]
+            if ext.eq_ignore_ascii_case("ziso") {
+                return true;
+            }
+            let _ = ext; // silence unused warning when ziso feature is off
+            false
+        })
+        .collect();
 
     for filepath in all_files {
         let filesize = filepath.metadata()?.len();
@@ -330,7 +334,10 @@ impl Server {
                                 self.disable_current_iso();
                                 socket.try_write(&0u32.to_be_bytes())?;
                             } else {
-                                let found = self.files.iter().find(|x| x.filename.ends_with(&normalized));
+                                let normalized_lc = normalized.to_lowercase();
+                                let found = self.files.iter().find(|x| {
+                                    x.filename.to_lowercase().ends_with(&normalized_lc)
+                                });
     
                                 let code: u32 = match found {
                                     Some(iso) => {
@@ -433,8 +440,8 @@ fn print_usage(bin_name: &str) {
     println!("\t-r - Recursive ISO scanning");
     println!("\t-v - Verbose output");
     println!("\t-h - Print help / usage");
-    println!("\t-i <file.iso>   - Convert ISO to ZISO (creates file.ziso)");
-    println!("\t-d <file.ziso>  - Convert ZISO to ISO (creates file.iso)");
+    println!("\t-i <file.iso>   - Convert ISO to ZISO (case of extension is preserved)");
+    println!("\t-d <file.ziso>  - Convert ZISO to ISO (case of extension is preserved)");
 }
 
 fn check_arg(args: &mut Vec<String>, arg_name: &str) -> bool {
@@ -462,6 +469,49 @@ fn get_arg_value(args: &mut Vec<String>, arg_name: &str) -> Option<String> {
     }
 }
 
+/// Given an input extension's actual case (e.g. "ISO", "iso", "Iso") and a
+/// lowercase target extension (e.g. "ziso"), return the target extension
+/// with the same case style.
+fn case_matched_extension(input_ext: &str, target_lower: &str) -> String {
+    let has_lower = input_ext.chars().any(|c| c.is_lowercase());
+    let has_upper = input_ext.chars().any(|c| c.is_uppercase());
+
+    match (has_lower, has_upper) {
+        (false, true)  => target_lower.to_uppercase(),   // "ISO" -> "ZISO"
+        (true,  false) => target_lower.to_string(),      // "iso" -> "ziso"
+        (true,  true)  => {                              // "Iso" -> "Ziso"
+            let mut chars = target_lower.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+        (false, false) => target_lower.to_string(),      // no letters -> lowercase
+    }
+}
+
+/// Build the conversion output path from the input path. Replaces the
+/// extension with `target_lower`, but preserves the input's extension case.
+fn output_path_with_matched_ext(
+    input: &Path,
+    target_lower: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let input_ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let new_ext = case_matched_extension(input_ext, target_lower);
+
+    let mut out = input.to_path_buf();
+    out.set_extension(&new_ext);
+
+    if out == input {
+        return Err(format!(
+            "Output path would equal input path: {}",
+            input.display()
+        )
+        .into());
+    }
+    Ok(out)
+}
+
 #[cfg(feature = "ziso")]
 fn convert_iso_to_ziso(iso_path: &Path) -> Result<(), Box<dyn Error>> {
     // Validate input file
@@ -481,10 +531,10 @@ fn convert_iso_to_ziso(iso_path: &Path) -> Result<(), Box<dyn Error>> {
         return Err("Input file must have .iso extension".into());
     }
     
-    // Create output path (same directory, .ziso extension)
-    let mut output_path = iso_path.to_path_buf();
-    output_path.set_extension("ziso");
-    
+    // Create output path in the same directory, preserving the input's
+    // extension case (e.g. game.ISO -> game.ZISO, game.iso -> game.ziso).
+    let output_path = output_path_with_matched_ext(iso_path, "ziso")?;
+
     if output_path.exists() {
         return Err(format!("Output file already exists: {}", output_path.display()).into());
     }
@@ -570,9 +620,9 @@ fn convert_ziso_to_iso(ziso_path: &Path) -> Result<(), Box<dyn Error>> {
     let size = reader.file_size(inner_iso)
         .ok_or("Could not determine inner ISO size")? as usize;
 
-    // Output path: same directory, .iso extension
-    let mut output_path = ziso_path.to_path_buf();
-    output_path.set_extension("iso");
+    // Output path: same directory, preserving the input's extension case
+    // (e.g. game.ZISO -> game.ISO, game.ziso -> game.iso).
+    let output_path = output_path_with_matched_ext(ziso_path, "iso")?;
     if output_path.exists() {
         return Err(format!("Output file already exists: {}", output_path.display()).into());
     }
