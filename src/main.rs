@@ -5,7 +5,7 @@ use glob::glob;
 use tokio::fs::File;
 use std::env;
 use std::error::Error;
-use std::io::Cursor;
+use std::io::{BufWriter, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -428,12 +428,13 @@ impl Server {
 }
 
 fn print_usage(bin_name: &str) {
-    println!("Usage: {} [-rvh] [-i <iso_file>] [iso directory path]", bin_name);
+    println!("Usage: {} [-rvh] [-i <iso_file>] [-d <ziso_file>] [iso directory path]", bin_name);
     println!("\nArgs:");
     println!("\t-r - Recursive ISO scanning");
     println!("\t-v - Verbose output");
     println!("\t-h - Print help / usage");
-    println!("\t-i <file.iso> - Convert ISO to ZISO format (creates file.ziso)");
+    println!("\t-i <file.iso>   - Convert ISO to ZISO (creates file.ziso)");
+    println!("\t-d <file.ziso>  - Convert ZISO to ISO (creates file.iso)");
 }
 
 fn check_arg(args: &mut Vec<String>, arg_name: &str) -> bool {
@@ -528,8 +529,59 @@ fn convert_iso_to_ziso(iso_path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(feature = "ziso")]
+fn convert_ziso_to_iso(ziso_path: &Path) -> Result<(), Box<dyn Error>> {
+    // Validate input
+    if !ziso_path.exists() { return Err("Input file does not exist".into()); }
+    if !ziso_path.is_file() { return Err("Input is not a file".into()); }
+    let ext = ziso_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if !ext.eq_ignore_ascii_case("ziso") {
+        return Err("Input file must have .ziso extension".into());
+    }
+
+    // Open archive
+    let reader = ZArchiveReader::open(ziso_path)?;
+    let files = reader.get_files()?;
+    let inner_iso = files.iter()
+        .find(|f| f.to_lowercase().ends_with(".iso"))
+        .ok_or("No .iso file found inside ZISO archive")?;
+
+    let size = reader.file_size(inner_iso)
+        .ok_or("Could not determine inner ISO size")? as usize;
+
+    // Output path: same directory, .iso extension
+    let mut output_path = ziso_path.to_path_buf();
+    output_path.set_extension("iso");
+    if output_path.exists() {
+        return Err(format!("Output file already exists: {}", output_path.display()).into());
+    }
+
+    let mut out = BufWriter::new(std::fs::File::create(&output_path)?);
+
+    const CHUNK_SIZE: usize = 1024 * 1024; // 1 MiB
+    let mut offset = 0;
+
+    while offset < size {
+        let len = std::cmp::min(CHUNK_SIZE, size - offset);
+        let data = reader.read_from_file(inner_iso, offset, len)
+            .ok_or_else(|| format!("Failed to read at offset {}", offset))?;
+        out.write_all(&data)?;
+        offset += len;
+    }
+
+    out.flush()?;
+
+    println!("✓ Extracted: {}", output_path.display());
+    Ok(())
+}
+
 #[cfg(not(feature = "ziso"))]
 fn convert_iso_to_ziso(_iso_path: &Path) -> Result<(), Box<dyn Error>> {
+    Err("ZISO support not compiled in. Rebuild with --features ziso".into())
+}
+
+#[cfg(not(feature = "ziso"))]
+fn convert_ziso_to_iso(_ziso_path: &Path) -> Result<(), Box<dyn Error>> {
     Err("ZISO support not compiled in. Rebuild with --features ziso".into())
 }
 
@@ -537,22 +589,30 @@ fn convert_iso_to_ziso(_iso_path: &Path) -> Result<(), Box<dyn Error>> {
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut args: Vec<String> = env::args().collect();
 
-    let print_help = check_arg(&mut args, "-h"); // Help
-    let recursive_scan = check_arg(&mut args, "-r"); // Recursive iso scanning
-    let verbose = check_arg(&mut args, "-v"); // Verbose / Debug
-    let convert_input = get_arg_value(&mut args, "-i"); // Convert ISO to ZISO
+    let print_help    = check_arg(&mut args, "-h");
+    let recursive_scan = check_arg(&mut args, "-r");
+    let verbose       = check_arg(&mut args, "-v");
+    let convert_input = get_arg_value(&mut args, "-i"); // ISO -> ZISO
+    let extract_input = get_arg_value(&mut args, "-d"); // ZISO -> ISO
 
-    // Check for mutually exclusive flags
-    if convert_input.is_some() && recursive_scan {
-        println!("ERROR: -i (convert mode) and -r (server mode) are mutually exclusive\n");
+    // Mutually exclusive conversion modes
+    if convert_input.is_some() && extract_input.is_some() {
+        println!("ERROR: -i and -d are mutually exclusive\n");
+        print_usage(&args[0]);
+        return Ok(());
+    }
+    if (convert_input.is_some() || extract_input.is_some()) && recursive_scan {
+        println!("ERROR: conversion mode and -r (server mode) are mutually exclusive\n");
         print_usage(&args[0]);
         return Ok(());
     }
 
-    // Handle conversion mode
+    // Handle conversion modes first, before touching directory args
     if let Some(iso_file) = convert_input {
-        let iso_path = Path::new(&iso_file);
-        return convert_iso_to_ziso(iso_path);
+        return convert_iso_to_ziso(Path::new(&iso_file));
+    }
+    if let Some(ziso_file) = extract_input {
+        return convert_ziso_to_iso(Path::new(&ziso_file));
     }
 
     if print_help || args.len() < 2 {
@@ -584,14 +644,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let (socket, _) = listener.accept().await?;
         println!("Got connection from: {:?}", &socket.peer_addr());
 
-        // Update list of isos
         files = get_iso_files(&files, filepath, recursive_scan, verbose).await?;
 
         let files_clone = files.clone();
         tokio::spawn(async move {
             let mut srv = Server {
                 files: files_clone,
-                verbose: verbose,
+                verbose,
                 ..Default::default()
             };
             srv.handle_connection(socket).await
