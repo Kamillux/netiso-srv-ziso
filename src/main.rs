@@ -491,24 +491,43 @@ fn convert_iso_to_ziso(iso_path: &Path) -> Result<(), Box<dyn Error>> {
     
     println!("Converting {} to ZISO format...", iso_path.display());
     println!("Output: {}", output_path.display());
-    
-    // Create a temporary directory containing the ISO
-    let temp_dir = std::env::temp_dir().join(format!("netiso_convert_{}", std::process::id()));
+
+    // Put the temp dir next to the input file, so we're on the same
+    // filesystem as the source ISO (avoids tiny /tmp tmpfs).
+    let parent = iso_path.parent().unwrap_or_else(|| Path::new("."));
+    let temp_dir = parent.join(format!(".netiso_convert_{}", std::process::id()));
+
+    // Clean up any leftover from a previous crashed run
+    let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir)?;
-    
-    // Copy ISO to temp directory
-    let iso_filename = iso_path.file_name().unwrap();
+
+    let iso_filename = iso_path
+        .file_name()
+        .ok_or("Input path has no filename")?;
     let temp_iso = temp_dir.join(iso_filename);
-    
+
     println!("Preparing files...");
-    std::fs::copy(iso_path, &temp_iso)?;
-    
+    // Prefer a hard link: instant and zero extra disk usage.
+    // Fall back to copying if hard_link is unsupported.
+    if let Err(link_err) = std::fs::hard_link(iso_path, &temp_iso) {
+        println!("Hard link failed ({link_err}); falling back to copy...");
+        if let Err(copy_err) = std::fs::copy(iso_path, &temp_iso) {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(format!("Failed to stage ISO in temp dir: {copy_err}").into());
+        }
+    }
+
     // Pack the temp directory into ZISO
     println!("Compressing (this may take a while)...");
-    match pack(&temp_dir, &output_path) {
+    let pack_result = pack(&temp_dir, &output_path);
+
+    // Clean up temp dir regardless of outcome
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    match pack_result {
         Ok(_) => {
             println!("✓ Successfully created: {}", output_path.display());
-            
+
             // Verify the archive
             if let Ok(reader) = ZArchiveReader::open(&output_path) {
                 if let Ok(files) = reader.get_files() {
@@ -517,16 +536,18 @@ fn convert_iso_to_ziso(iso_path: &Path) -> Result<(), Box<dyn Error>> {
             }
         },
         Err(e) => {
-            // Clean up on error
+            // Clean up partial output on error
             let _ = std::fs::remove_file(&output_path);
             return Err(format!("Failed to create ZISO: {}", e).into());
         }
     }
-    
-    // Clean up temp directory
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    
+
     Ok(())
+}
+
+#[cfg(not(feature = "ziso"))]
+fn convert_iso_to_ziso(_iso_path: &Path) -> Result<(), Box<dyn Error>> {
+    Err("ZISO support not compiled in. Rebuild with --features ziso".into())
 }
 
 #[cfg(feature = "ziso")]
@@ -573,11 +594,6 @@ fn convert_ziso_to_iso(ziso_path: &Path) -> Result<(), Box<dyn Error>> {
 
     println!("✓ Extracted: {}", output_path.display());
     Ok(())
-}
-
-#[cfg(not(feature = "ziso"))]
-fn convert_iso_to_ziso(_iso_path: &Path) -> Result<(), Box<dyn Error>> {
-    Err("ZISO support not compiled in. Rebuild with --features ziso".into())
 }
 
 #[cfg(not(feature = "ziso"))]
